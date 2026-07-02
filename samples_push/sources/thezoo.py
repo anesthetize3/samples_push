@@ -19,7 +19,7 @@ REPO_URL = "https://github.com/ytisf/theZoo.git"
 SOURCE_CODE_EXTENSIONS = frozenset({
     ".java", ".py", ".c", ".cpp", ".h", ".cs", ".go", ".rs",
     ".rb", ".pl", ".php", ".swift", ".kt", ".scala", ".groovy",
-    ".ts", ".tsx", ".jsx", ".coffee",
+    ".ts", ".tsx", ".jsx", ".js", ".coffee",
     ".asm", ".s", ".inc",
     ".md", ".txt", ".rst", ".log", ".cfg", ".ini", ".yaml", ".yml",
     ".json", ".xml", ".csv", ".html", ".htm", ".css",

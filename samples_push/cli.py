@@ -13,7 +13,6 @@ from .config import Config, SOURCE_REGISTRY, DEFAULT_SOURCES, default_vault_path
 from .pipeline import run_pipeline
 from .sinks.filescan import FilescanSink, STAGING_BASE_URL
 from .state import State
-from .state_sync import StateSync
 from .vault import EncryptedVault, CloudSyncVaultError
 
 
@@ -476,16 +475,7 @@ def main(argv: list[str] | None = None) -> int:
         console.print(f"[red]{e}[/red]")
         return 2
 
-    state_db_path = vault.root / "state.db"
-    sync: StateSync | None = None
-    if config.state_repo_url:
-        sync = StateSync(config.state_repo_url, state_db_path)
-        try:
-            sync.pull()
-        except Exception as e:
-            log.warning("state-sync pull failed: %s (continuing with local state)", e)
-
-    state = State(state_db_path)
+    state = State(vault.root / "state.db")
 
     if args.clear_cache or args.clear_target or args.clear_cursors:
         return _handle_cache_clear(args, state, config)
@@ -577,11 +567,6 @@ def main(argv: list[str] | None = None) -> int:
         )
     finally:
         state.close()
-        if sync:
-            try:
-                sync.push()
-            except Exception as e:
-                log.warning("state-sync push failed: %s", e)
 
     console.rule("Summary")
     for name, stats in totals.items():

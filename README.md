@@ -4,7 +4,7 @@ Collects malware samples from public threat-intel feeds and uploads each one
 to [filescan.io](https://www.filescan.io/) for analysis. Runs on Linux,
 macOS, and Windows.
 
-**Latest:** Account-identified uploads + rate-limiting + unified setup script.
+**Latest:** Account-identified uploads + rate-limiting + multi-machine state sync + unified setup script.
 
 ---
 
@@ -18,7 +18,7 @@ chmod +x run.sh
 ./run.sh --limit 10
 ```
 
-The script automatically creates a venv, installs dependencies, and runs. On first run, it copies `.env.example` → `.env` for you to configure.
+The script automatically creates a venv, installs dependencies, and runs. On first run, it copies `.env.example` → `~/.local/share/samples_push/.env` for you to configure.
 
 ### Windows (PowerShell)
 
@@ -27,8 +27,9 @@ cd samples_push
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-cp .env.example .env
-# Edit .env with your auth token
+mkdir "$env:LOCALAPPDATA\samples_push" -Force
+copy .env.example "$env:LOCALAPPDATA\samples_push\.env"
+notepad "$env:LOCALAPPDATA\samples_push\.env"
 python -m samples_push --limit 10
 ```
 
@@ -37,7 +38,7 @@ python -m samples_push --limit 10
 **Best: Auth Token** (account-identified uploads with priority 100)
 ```bash
 # F12 → Network → any filescan.io request → Headers → Authorization: Bearer eyJ...
-# Paste in .env:
+# Paste in ~/.local/share/samples_push/.env (Linux) or %LOCALAPPDATA%\samples_push\.env (Windows):
 FILESCAN_AUTH_TOKEN=eyJ...
 
 ./run.sh --limit 10
@@ -55,12 +56,14 @@ export FILESCAN_API_KEY="your_key"
 
 ✅ **Account-Identified Uploads** - Auth token for leaderboard attribution  
 ✅ **Rate Limiting** - `--delay 60` prevents queue overflow (default)  
+✅ **Auto-Retry** - Failed uploads are retried on next run  
 ✅ **Unified Setup** - Single `./run.sh` command (venv + deps)  
 ✅ **Vault Repair** - Fix unsupported zip compression  
 ✅ **Smart Replay** - Re-upload vault samples without re-fetching  
 ✅ **Encrypted Storage** - AES-256 vault, never decrypt to disk  
 ✅ **Auto-Dedup** - SQLite state tracking per target  
 ✅ **Bulk ZIP Import** - `--import-zip` for batch uploads  
+✅ **Secrets Outside Repo** - `.env` stored in local data dir, not project folder  
 
 ---
 
@@ -115,15 +118,41 @@ python -m samples_push --cookies ~/.filescan_cookies.json
 
 ---
 
-## Storage
+## Storage & Config
 
-Samples stored in per-source, AES-256 encrypted ZIPs (password: `infected`). Never decrypted to disk.
+All data and secrets are stored in a local (non-synced) directory — never in the project folder.
 
-| OS | Default Path |
-|----|--------------|
-| Linux | `~/.local/share/samples_push/vault` |
-| macOS | `~/Library/Application Support/samples_push/vault` |
-| Windows | `%LOCALAPPDATA%\samples_push\vault` |
+| OS | Data Path |
+|----|-----------|
+| Linux | `~/.local/share/samples_push/` |
+| macOS | `~/Library/Application Support/samples_push/` |
+| Windows | `%LOCALAPPDATA%\samples_push\` |
+
+Contents: `.env` (API keys), `vault/` (encrypted samples), `state.db` (upload history)
+
+### .env Configuration
+
+On first run, `run.sh` copies `.env.example` to the data directory automatically. To configure manually:
+
+```bash
+# Linux / macOS
+mkdir -p ~/.local/share/samples_push
+cp .env.example ~/.local/share/samples_push/.env
+nano ~/.local/share/samples_push/.env
+```
+
+```powershell
+# Windows (PowerShell)
+mkdir "$env:LOCALAPPDATA\samples_push" -Force
+copy .env.example "$env:LOCALAPPDATA\samples_push\.env"
+notepad "$env:LOCALAPPDATA\samples_push\.env"
+```
+
+Required fields in `.env`:
+```
+FILESCAN_API_KEY=your_api_key
+FILESCAN_AUTH_TOKEN=eyJ...    # For account-identified uploads (priority 100)
+```
 
 App refuses to run if vault is under cloud-sync folders (OneDrive, Dropbox, etc.)
 
@@ -139,7 +168,7 @@ chmod +x run.sh
 ./run.sh --help
 ```
 
-First run auto-creates venv, installs deps, and prompts for `.env` config.
+First run auto-creates venv, installs deps, and copies `.env` to `~/.local/share/samples_push/.env`.
 
 ### Linux / macOS (Manual)
 
@@ -150,7 +179,8 @@ sudo apt install python3 python3-venv python3-pip git  # Debian/Ubuntu
 git clone <this-repo> samples_push && cd samples_push
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env && $EDITOR .env
+mkdir -p ~/.local/share/samples_push
+cp .env.example ~/.local/share/samples_push/.env && $EDITOR ~/.local/share/samples_push/.env
 python -m samples_push --limit 10
 ```
 
@@ -160,8 +190,9 @@ python -m samples_push --limit 10
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-copy .env.example .env
-notepad .env
+mkdir "$env:LOCALAPPDATA\samples_push" -Force
+copy .env.example "$env:LOCALAPPDATA\samples_push\.env"
+notepad "$env:LOCALAPPDATA\samples_push\.env"
 python -m samples_push --limit 10
 ```
 
@@ -303,7 +334,7 @@ Get the JWT token from your browser:
 
 1. Open https://www.filescan.io (logged in)
 2. F12 → Network → click any request → Headers → copy `Authorization` value (after "Bearer ")
-3. Add to `.env`:
+3. Add to `.env` (in local data dir, not project folder):
    ```
    FILESCAN_AUTH_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
    ```
@@ -349,7 +380,6 @@ After=network-online.target
 Type=oneshot
 User=samples
 WorkingDirectory=/opt/samples_push
-EnvironmentFile=/opt/samples_push/.env
 ExecStart=/opt/samples_push/run.sh --limit 10 --delay 60
 ```
 
@@ -398,40 +428,33 @@ schtasks /Create /SC HOURLY /MO 6 /TN "samples_push" `
 
 ### Credentials
 
-**Auth Token (in .env):**
-- Store in `.env`: `FILESCAN_AUTH_TOKEN=eyJ...`
-- Never commit to git
-- Rotate if leaked
+`.env` is stored in a local-only directory (never in the project/repo folder):
+- Linux: `~/.local/share/samples_push/.env`
+- macOS: `~/Library/Application Support/samples_push/.env`
+- Windows: `%LOCALAPPDATA%\samples_push\.env`
 
-**API Key (in .env):**
-- Store in `.env`: `FILESCAN_API_KEY="..."`
-- Never hardcode
-- Never commit to git
+**Auth Token:** `FILESCAN_AUTH_TOKEN=eyJ...` — rotate if leaked  
+**API Key:** `FILESCAN_API_KEY="..."` — never hardcode
 
 ### Best Practices
 
 ```bash
-# DO: Use .env file
-FILESCAN_AUTH_TOKEN="eyJ..."
-FILESCAN_API_KEY="key"
+# DO: Restrict permissions on .env
+chmod 600 ~/.local/share/samples_push/.env
 
 # DO: Use unique tokens per environment
 FILESCAN_STAGING_API_KEY="staging_key"
 
-# DO: Restrict permissions
-chmod 600 .env
-
+# DON'T: Store .env in project folder or git repo
 # DON'T: Hardcode secrets in scripts
-# DON'T: Commit .env to git
 # DON'T: Share tokens
 ```
 
 ### .gitignore
 
 ```
-.env
-.env.local
-vault/
+__pycache__/
+*.pyc
 .venv/
 ```
 
@@ -439,7 +462,9 @@ vault/
 
 ## State & Dedup
 
-`state.db` (SQLite) tracks uploaded SHA256s and flow_ids. Never re-uploads same hash.
+`state.db` (SQLite) tracks uploaded SHA256s and flow_ids. Never re-uploads same hash to same target.
+
+**Auto-retry:** Failed uploads (HTTP errors, crashes) are automatically retried on the next run. Only successfully uploaded samples are marked as "done".
 
 Reset:
 ```bash
@@ -525,6 +550,9 @@ samples_push/
 
 ## FAQ
 
+**Q: Where is .env stored?**  
+A: In the local data dir (`~/.local/share/samples_push/.env` on Linux, `%LOCALAPPDATA%\samples_push\.env` on Windows). Never in the project folder.
+
 **Q: One command to run everything?**  
 A: `./run.sh --limit 10` (venv auto-created, deps auto-installed on Linux/macOS)
 
@@ -544,16 +572,19 @@ A: Yes — `./run.sh --repair-vault` fixes DEFLATE64, BZIP2, LZMA.
 A: Yes — cron (Linux) or Task Scheduler (Windows). See Scheduling section.
 
 **Q: Multiple FileScan accounts?**  
-A: Set different `FILESCAN_AUTH_TOKEN` in .env, or use separate `.env` files.
+A: Set different `FILESCAN_AUTH_TOKEN` in .env, or use separate data dirs.
+
+**Q: What happens if upload fails?**  
+A: Failed uploads are automatically retried on the next run. Only queue-full stops the run early.
 
 ---
 
 ## Status
 
 ✅ **Production Ready** - Account-identified uploads with rate limiting  
-✅ **Tested & Verified** - All features working  
-✅ **Unified Setup** - Single `./run.sh` command  
+✅ **Auto-Retry** - Failed uploads retried on next run  
+✅ **Secrets Safe** - .env stored outside project folder  
 
-**Version:** 2.0 (Account-identified + Rate-limited)  
-**Updated:** 2026-06-24  
+**Version:** 3.0 (Local .env + auto-retry)  
+**Updated:** 2026-07-02  
 **Status:** Ready for Production
