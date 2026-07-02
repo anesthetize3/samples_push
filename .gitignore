@@ -1,0 +1,6 @@
+.env
+src_copy.xlsx
+__pycache__/
+*.pyc
+.venv/
+venv/

@@ -1,0 +1,4 @@
+requests>=2.32
+python-dotenv>=1.0
+pyzipper>=0.3.6
+rich>=13.7
