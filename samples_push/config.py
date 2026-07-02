@@ -67,7 +67,10 @@ class Config:
 
     @classmethod
     def load(cls) -> "Config":
-        load_dotenv()
+        data_root = _platform_data_root()
+        data_root.mkdir(parents=True, exist_ok=True)
+        env_path = data_root / ".env"
+        load_dotenv(env_path)
         return cls(
             filescan_api_key=os.environ.get("FILESCAN_API_KEY", "").strip(),
             filescan_auth_token=os.environ.get("FILESCAN_AUTH_TOKEN", "").strip(),

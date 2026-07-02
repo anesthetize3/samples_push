@@ -2,9 +2,14 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV_DIR="$HOME/.local/share/samples_push/venv"
+DATA_DIR="$HOME/.local/share/samples_push"
+VENV_DIR="$DATA_DIR/venv"
 MARKER="$VENV_DIR/.installed"
 REQ="$SCRIPT_DIR/requirements.txt"
+ENV_FILE="$DATA_DIR/.env"
+
+# Create data dir if missing
+mkdir -p "$DATA_DIR"
 
 # Create venv if missing
 if [ ! -d "$VENV_DIR" ]; then
@@ -20,11 +25,12 @@ if [ ! -f "$MARKER" ] || [ "$REQ" -nt "$MARKER" ]; then
     touch "$MARKER"
 fi
 
-# Copy .env.example if .env is missing
-if [ ! -f "$SCRIPT_DIR/.env" ] && [ -f "$SCRIPT_DIR/.env.example" ]; then
-    echo "[setup] Created .env from .env.example — edit it before running."
-    cp "$SCRIPT_DIR/.env.example" "$SCRIPT_DIR/.env"
+# Copy .env.example if .env is missing in data dir
+if [ ! -f "$ENV_FILE" ] && [ -f "$SCRIPT_DIR/.env.example" ]; then
+    echo "[setup] Created .env at $ENV_FILE — edit it before running."
+    cp "$SCRIPT_DIR/.env.example" "$ENV_FILE"
     exit 1
 fi
 
+cd "$SCRIPT_DIR"
 exec "$VENV_DIR/bin/python" -m samples_push "$@"
