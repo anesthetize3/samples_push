@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import signal
 import time
 from typing import Iterable
 
@@ -11,6 +12,30 @@ from .vault import EncryptedVault
 
 
 log = logging.getLogger(__name__)
+
+_shutdown_requested = False
+
+
+QUEUE_FULL_COOLDOWN = 300  # 5 minutes — matches what works when restarting manually
+
+
+def request_shutdown() -> None:
+    global _shutdown_requested
+    _shutdown_requested = True
+
+
+def _wait_queue(sink: FilescanSink, cooldown: float = QUEUE_FULL_COOLDOWN) -> bool:
+    """Reset session, wait for cooldown, then signal ready to retry.
+    Returns False if shutdown requested during wait."""
+    log.info("filescan queue full — resetting session and waiting %gs before retry "
+             "(Ctrl+C to stop gracefully)...", cooldown)
+    sink.reset_session()
+    end = time.time() + cooldown
+    while time.time() < end:
+        if _shutdown_requested:
+            return False
+        time.sleep(1)
+    return True
 
 
 def _replay(
@@ -44,6 +69,9 @@ def _replay(
              "(out of %d in vault, delay=%gs)", len(candidates), target, len(all_samples), delay)
 
     for i, (source, sha, filename) in enumerate(candidates):
+        if _shutdown_requested:
+            log.info("shutdown requested — stopping replay")
+            break
         if delay > 0 and i > 0:
             log.debug("waiting %gs before next upload...", delay)
             time.sleep(delay)
@@ -62,12 +90,16 @@ def _replay(
         try:
             flow_id = sink.upload(name, data)
         except FilescanQueueFull as e:
-            log.error(
-                "filescan queue full during replay, stopping. %s/%s deferred (%s)",
-                source, sha[:12], e,
-            )
-            stats["deferred"] += 1
-            return stats | {"_queue_full": 1}
+            log.warning("filescan queue full during replay: %s", e)
+            if not _wait_queue(sink):
+                stats["deferred"] += 1
+                return stats
+            try:
+                flow_id = sink.upload(name, data)
+            except (FilescanQueueFull, FilescanError) as e2:
+                log.warning("replay upload %s/%s still failing: %s", source, sha[:12], e2)
+                stats["deferred"] += 1
+                continue
         except FilescanError as e:
             log.warning("replay upload %s/%s failed: %s", source, sha[:12], e)
             state.mark(sha, source, target, flow_id=None,
@@ -83,7 +115,9 @@ def _replay(
 
         state.mark(sha, source, target, flow_id=flow_id, status="uploaded")
         stats["uploaded"] += 1
-        log.info("replayed %s/%s flow_id=%s", source, sha[:12], flow_id)
+        size_kb = len(data) / 1024
+        log.info("replayed \\[%s] %s (%s, %.1f KB) flow_id=%s",
+                 source, filename, sha[:12], size_kb, flow_id)
 
         if wait:
             try:
@@ -111,16 +145,15 @@ def run_pipeline(
 
     if replay and sink is not None:
         replay_stats = _replay(state, vault, sink, target, wait, limit=limit, delay=delay)
-        if replay_stats.pop("_queue_full", 0):
-            queue_full_stop = True
         totals["__replay__"] = replay_stats
         return totals
 
     for src in sources:
         stats = {"fetched": 0, "new": 0, "uploaded": 0, "errors": 0, "deferred": 0}
         totals[src.name] = stats
-        if queue_full_stop:
-            log.warning("[%s] skipped: filescan queue full earlier this run", src.name)
+        if queue_full_stop or _shutdown_requested:
+            log.warning("\\[%s] skipped: %s", src.name,
+                        "shutdown requested" if _shutdown_requested else "filescan queue full")
             continue
         log.info("[bold cyan]== %s ==[/bold cyan]", src.name)
         try:
@@ -131,6 +164,9 @@ def run_pipeline(
             continue
 
         while True:
+            if _shutdown_requested:
+                log.info("shutdown requested — stopping source %s", src.name)
+                break
             try:
                 sample = next(iterator)
             except StopIteration:
@@ -138,7 +174,7 @@ def run_pipeline(
             except Exception as e:
                 # Network blip / API outage inside the source generator —
                 # log and move to the next source instead of aborting the run.
-                log.warning("[%s] iteration aborted: %s", src.name, e)
+                log.warning("\\[%s] iteration aborted: %s", src.name, e)
                 stats["errors"] += 1
                 break
 
@@ -157,7 +193,8 @@ def run_pipeline(
 
             if sink is None:
                 state.mark(sha, src.name, target, flow_id=None, status="vaulted")
-                log.info("vaulted %s/%s", src.name, sha[:12])
+                size_kb = len(sample.content) / 1024
+                log.info("vaulted \\[%s] %s (%s, %.1f KB)", src.name, sample.filename, sha[:12], size_kb)
                 continue
 
             if delay > 0 and stats["uploaded"] > 0:
@@ -168,14 +205,17 @@ def run_pipeline(
                 _, data = vault.read(src.name, sha)
                 flow_id = sink.upload(sample.filename, data)
             except FilescanQueueFull as e:
-                log.error(
-                    "filescan queue full, stopping run. Sample %s left in vault, "
-                    "will retry on next run. (%s)",
-                    sha[:12], e,
-                )
-                stats["deferred"] += 1
-                queue_full_stop = True
-                break
+                log.warning("filescan queue full: %s", e)
+                if not _wait_queue(sink):
+                    stats["deferred"] += 1
+                    queue_full_stop = True
+                    break
+                try:
+                    flow_id = sink.upload(sample.filename, data)
+                except (FilescanQueueFull, FilescanError) as e2:
+                    log.warning("upload %s still failing after wait: %s", sha[:12], e2)
+                    stats["deferred"] += 1
+                    continue
             except FilescanError as e:
                 log.warning("filescan upload %s failed: %s", sha, e)
                 state.mark(sha, src.name, target, flow_id=None,
@@ -191,7 +231,9 @@ def run_pipeline(
 
             state.mark(sha, src.name, target, flow_id=flow_id, status="uploaded")
             stats["uploaded"] += 1
-            log.info("uploaded %s/%s flow_id=%s", src.name, sha[:12], flow_id)
+            size_kb = len(sample.content) / 1024
+            log.info("uploaded \\[%s] %s (%s, %.1f KB) flow_id=%s",
+                     src.name, sample.filename, sha[:12], size_kb, flow_id)
 
             if wait:
                 try:

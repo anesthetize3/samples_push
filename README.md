@@ -57,6 +57,7 @@ export FILESCAN_API_KEY="your_key"
 ✅ **Account-Identified Uploads** - Auth token for leaderboard attribution  
 ✅ **Rate Limiting** - `--delay 60` prevents queue overflow (default)  
 ✅ **Auto-Retry** - Failed uploads are retried on next run  
+✅ **Upload Dashboard** - `--stats` shows uploads by day/source, file types, sizes  
 ✅ **Unified Setup** - Single `./run.sh` command (venv + deps)  
 ✅ **Vault Repair** - Fix unsupported zip compression  
 ✅ **Smart Replay** - Re-upload vault samples without re-fetching  
@@ -71,7 +72,7 @@ export FILESCAN_API_KEY="your_key"
 
 | ID | Provider | Key Required |
 |-------|----------|--------------|
-| `bazaar` | abuse.ch MalwareBazaar | `ABUSECH_API_KEY` |
+| `bazaar` | abuse.ch MalwareBazaar | none (public datalake) |
 | `urlhaus` | abuse.ch URLhaus | `ABUSECH_API_KEY` |
 | `malshare` | MalShare | `MALSHARE_API_KEY` |
 | `vx` | Virus.Exchange | `VX_API_KEY` |
@@ -237,6 +238,9 @@ Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\samples_push"
 # Repair vault compression issues
 ./run.sh --repair-vault
 
+# View upload statistics
+./run.sh --stats
+
 # Re-upload cleared samples with auth token
 ./run.sh --clear-target "https://www.filescan.io"
 ./run.sh --replay --delay 60 --limit 100
@@ -259,6 +263,7 @@ Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\samples_push"
 | `--import-zip` | Import zipped samples |
 | `--zip-password` | Password for encrypted zips (default: infected) |
 | `--repair-vault` | Repair unsupported compression (DEFLATE64, BZIP2, LZMA) |
+| `--stats` | Show upload dashboard (by day/source, file types, sizes) |
 | `--clear-cache` | Clear all upload history |
 | `--clear-target URL` | Clear history for specific target |
 | `--clear-cursors` | Re-fetch from sources |

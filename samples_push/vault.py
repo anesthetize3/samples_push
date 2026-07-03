@@ -138,3 +138,24 @@ class EncryptedVault:
                 except Exception:
                     continue
         return results
+
+    def list_all_with_sizes(self) -> list[tuple[str, str, str, int]]:
+        """List all (source, sha256, filename, size_bytes) from vault zips."""
+        results = []
+        for zp in self.samples_dir.glob("*.zip"):
+            if zp.stem.endswith("_backup"):
+                continue
+            source = zp.stem
+            with self._lock_for(source):
+                try:
+                    with pyzipper.AESZipFile(zp, "r") as zf:
+                        zf.setpassword(PASSWORD)
+                        for info in zf.infolist():
+                            if info.is_dir():
+                                continue
+                            name = info.filename
+                            sha = name.split(".")[0] if "." in name else name
+                            results.append((source, sha, name, info.file_size))
+                except Exception:
+                    continue
+        return results

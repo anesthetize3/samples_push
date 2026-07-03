@@ -169,3 +169,41 @@ class State:
             self._conn.execute("DELETE FROM source_cursor")
             self._conn.commit()
             return count
+
+    def stats_by_day(self, days: int = 14) -> list[tuple[str, int]]:
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT DATE(uploaded_at) AS day, COUNT(*) "
+                "FROM processed "
+                "WHERE uploaded_at >= DATE('now', ? || ' days') "
+                "GROUP BY day ORDER BY day DESC",
+                (f"-{days}",),
+            )
+            return cur.fetchall()
+
+    def stats_by_day_source(self, days: int = 14) -> list[tuple[str, str, int]]:
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT DATE(uploaded_at) AS day, source, COUNT(*) "
+                "FROM processed "
+                "WHERE uploaded_at >= DATE('now', ? || ' days') "
+                "GROUP BY day, source ORDER BY day DESC, source",
+                (f"-{days}",),
+            )
+            return cur.fetchall()
+
+    def stats_by_source(self) -> list[tuple[str, int]]:
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT source, COUNT(*) FROM processed "
+                "GROUP BY source ORDER BY 2 DESC"
+            )
+            return cur.fetchall()
+
+    def stats_by_status(self) -> list[tuple[str, int]]:
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT COALESCE(status, 'unknown'), COUNT(*) FROM processed "
+                "GROUP BY 1 ORDER BY 2 DESC"
+            )
+            return cur.fetchall()

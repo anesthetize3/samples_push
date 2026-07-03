@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 # Source registry: short_id -> (module path, class name, env keys it needs)
 SOURCE_REGISTRY: dict[str, tuple[str, str, tuple[str, ...]]] = {
-    "bazaar":  ("samples_push.sources.malwarebazaar",   "MalwareBazaarSource", ("ABUSECH_API_KEY",)),
+    "bazaar":  ("samples_push.sources.malwarebazaar",   "MalwareBazaarSource", ()),
     "urlhaus": ("samples_push.sources.urlhaus",         "URLhausSource",       ("ABUSECH_API_KEY",)),
     "malshare": ("samples_push.sources.malshare",       "MalShareSource",      ("MALSHARE_API_KEY",)),
     "vx":      ("samples_push.sources.virusexchange",   "VirusExchangeSource", ("VX_API_KEY",)),

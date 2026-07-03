@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import logging
+import signal
 import sys
 from pathlib import Path
 
@@ -10,7 +11,7 @@ from rich.console import Console
 from rich.logging import RichHandler
 
 from .config import Config, SOURCE_REGISTRY, DEFAULT_SOURCES, default_vault_path
-from .pipeline import run_pipeline
+from .pipeline import run_pipeline, request_shutdown
 from .sinks.filescan import FilescanSink, STAGING_BASE_URL
 from .state import State
 from .vault import EncryptedVault, CloudSyncVaultError
@@ -58,6 +59,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "samples to staging).",
     )
     cache_group = p.add_mutually_exclusive_group()
+    cache_group.add_argument(
+        "--stats",
+        action="store_true",
+        help="Show upload statistics dashboard (uploads by day, source, status)",
+    )
     cache_group.add_argument(
         "--clear-cache",
         action="store_true",
@@ -427,6 +433,129 @@ def _handle_vault_repair(args: argparse.Namespace, state: State, config: Config)
         state.close()
 
 
+def _handle_stats(state: State, vault: "EncryptedVault") -> int:
+    """Print upload statistics dashboard."""
+    from collections import Counter
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.columns import Columns
+
+    try:
+        total = state.count_processed()
+        if total == 0:
+            console.print("[yellow]No upload data yet.[/yellow]")
+            return 0
+
+        console.print(Panel(f"[bold]{total:,}[/bold] total samples processed", title="Upload Stats"))
+
+        by_day_source = state.stats_by_day_source(days=14)
+        if by_day_source:
+            console.rule("Uploads by Day x Source (last 14 days)")
+
+            all_sources = sorted({src for _, src, _ in by_day_source})
+            grid: dict[str, dict[str, int]] = {}
+            for day, src, count in by_day_source:
+                grid.setdefault(day, {})[src] = count
+
+            day_table = Table(show_header=True, show_edge=False, pad_edge=False)
+            day_table.add_column("Date", style="cyan", no_wrap=True)
+            for src in all_sources:
+                day_table.add_column(src, justify="right")
+            day_table.add_column("Total", justify="right", style="bold")
+
+            source_totals = {src: 0 for src in all_sources}
+            grand_total = 0
+            for day in sorted(grid.keys(), reverse=True):
+                row_counts = grid[day]
+                row = [str(row_counts.get(src, "")) for src in all_sources]
+                row_total = sum(row_counts.values())
+                for src in all_sources:
+                    source_totals[src] += row_counts.get(src, 0)
+                grand_total += row_total
+                day_table.add_row(day, *row, str(row_total))
+
+            day_table.add_section()
+            totals_row = [str(source_totals[src]) for src in all_sources]
+            day_table.add_row("[bold]Total[/bold]", *totals_row, f"[bold]{grand_total}[/bold]")
+
+            console.print(day_table)
+            console.print()
+
+        by_source = state.stats_by_source()
+        by_status = state.stats_by_status()
+
+        src_table = Table(title="By Source (all time)", show_header=True, show_edge=False)
+        src_table.add_column("Source", style="cyan")
+        src_table.add_column("Count", justify="right", style="bold")
+        src_total = 0
+        for source, count in by_source:
+            src_table.add_row(source, f"{count:,}")
+            src_total += count
+        src_table.add_section()
+        src_table.add_row("[bold]Total[/bold]", f"[bold]{src_total:,}[/bold]")
+
+        status_table = Table(title="By Status", show_header=True, show_edge=False)
+        status_table.add_column("Status", style="cyan")
+        status_table.add_column("Count", justify="right", style="bold")
+        status_total = 0
+        for status, count in by_status:
+            label = status[:40] if len(status) > 40 else status
+            status_table.add_row(label, f"{count:,}")
+            status_total += count
+        status_table.add_section()
+        status_table.add_row("[bold]Total[/bold]", f"[bold]{status_total:,}[/bold]")
+
+        console.print(Columns([src_table, status_table], padding=(0, 4)))
+        console.print()
+
+        vault_items = vault.list_all_with_sizes()
+        if vault_items:
+            console.rule("Vault File Analysis")
+
+            ext_counter: Counter[str] = Counter()
+            sizes: list[int] = []
+            for _, _, name, size in vault_items:
+                ext = name.rsplit(".", 1)[1].lower() if "." in name else "(none)"
+                ext_counter[ext] += 1
+                sizes.append(size)
+
+            type_table = Table(title="By File Type", show_header=True, show_edge=False)
+            type_table.add_column("Extension", style="cyan")
+            type_table.add_column("Count", justify="right", style="bold")
+            for ext, count in ext_counter.most_common(15):
+                type_table.add_row(f".{ext}" if ext != "(none)" else ext, f"{count:,}")
+            type_table.add_section()
+            type_table.add_row("[bold]Total[/bold]", f"[bold]{len(vault_items):,}[/bold]")
+
+            size_table = Table(title="By Size Range", show_header=True, show_edge=False)
+            size_table.add_column("Range", style="cyan")
+            size_table.add_column("Count", justify="right", style="bold")
+            ranges = [
+                ("< 1 KB", 0, 1024),
+                ("1-10 KB", 1024, 10240),
+                ("10-100 KB", 10240, 102400),
+                ("100 KB - 1 MB", 102400, 1048576),
+                ("1-10 MB", 1048576, 10485760),
+                ("> 10 MB", 10485760, float("inf")),
+            ]
+            for label, lo, hi in ranges:
+                count = sum(1 for s in sizes if lo <= s < hi)
+                if count > 0:
+                    size_table.add_row(label, f"{count:,}")
+            size_table.add_section()
+            total_size_mb = sum(sizes) / 1048576
+            size_table.add_row(
+                "[bold]Total[/bold]",
+                f"[bold]{len(sizes):,}[/bold] ({total_size_mb:.1f} MB)",
+            )
+
+            console.print(Columns([type_table, size_table], padding=(0, 4)))
+
+        return 0
+    finally:
+        state.close()
+
+
 def _handle_cache_clear(args: argparse.Namespace, state: State, config: Config) -> int:
     """Handle cache clearing commands."""
     try:
@@ -476,6 +605,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     state = State(vault.root / "state.db")
+
+    if args.stats:
+        return _handle_stats(state, vault)
 
     if args.clear_cache or args.clear_target or args.clear_cursors:
         return _handle_cache_clear(args, state, config)
@@ -552,6 +684,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.replay and args.dry_run:
         log.warning("--replay is a no-op under --dry-run (no sink to upload to)")
+
+    def _handle_sigint(signum, frame):
+        console.print("\n[yellow]Ctrl+C received — finishing current upload and stopping...[/yellow]")
+        request_shutdown()
+
+    signal.signal(signal.SIGINT, _handle_sigint)
 
     try:
         totals = run_pipeline(

@@ -40,32 +40,41 @@ class FilescanSink:
         self.upload_url = f"{self.base_url}/api/scan/file"
         self.report_url = f"{self.base_url}/api/scan/{{flow_id}}/report"
         self.timeout = timeout
-        self.session = requests.Session()
         self.auth_method = None
+        self._auth_token = auth_token
+        self._cookies_file = cookies_file
 
-        # Add browser-like headers to match UI request
+        self._init_session()
+
+    def _init_session(self) -> None:
+        """Create (or recreate) the HTTP session with auth."""
+        self.session = requests.Session()
         self._set_browser_headers()
 
-        # Priority: auth_token (.env) > cookies file > api_key
-        if auth_token:
-            self._set_auth_token(auth_token)
+        if self._auth_token:
+            self._set_auth_token(self._auth_token)
             self.auth_method = "auth token (FILESCAN_AUTH_TOKEN)"
-            log.info("FilescanSink initialized with auth method: %s", self.auth_method)
             return
 
-        if cookies_file:
-            if self._load_cookies(cookies_file):
-                self.auth_method = f"cookies ({cookies_file})"
+        if self._cookies_file:
+            if self._load_cookies(self._cookies_file):
+                self.auth_method = f"cookies ({self._cookies_file})"
                 return
 
-        # Fallback to API key
-        if api_key:
-            self._set_api_key_auth(api_key)
+        if self.api_key:
+            self._set_api_key_auth(self.api_key)
             self.auth_method = "API key"
         else:
             raise ValueError("Either auth_token, api_key, or cookies_file must be provided")
 
-        log.info("FilescanSink initialized with auth method: %s", self.auth_method)
+    def reset_session(self) -> None:
+        """Close and recreate session (helps after queue-full cooldown)."""
+        try:
+            self.session.close()
+        except Exception:
+            pass
+        self._init_session()
+        log.info("filescan session reset")
 
     def _set_browser_headers(self) -> None:
         """Add browser-like headers to match UI request format."""
