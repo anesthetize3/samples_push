@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import abc
 import hashlib
-from typing import Iterator
+from typing import Callable, Iterator
 
 import requests
 
@@ -17,6 +17,8 @@ class Source(abc.ABC):
         self.config = config
         self.session = requests.Session()
         self.session.headers["User-Agent"] = "samples_push/0.1"
+        self.skip_hashes: set[str] = set()
+        self.should_stop: "Callable[[], bool]" = lambda: False
 
     @abc.abstractmethod
     def iter_new(self, limit: int) -> Iterator[Sample]:

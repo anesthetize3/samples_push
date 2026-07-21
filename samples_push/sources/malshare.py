@@ -20,7 +20,6 @@ class MalShareSource(Source):
         self.api_key = config.env["MALSHARE_API_KEY"].strip()
 
     def iter_new(self, limit: int) -> Iterator[Sample]:
-        # getlist returns recent 24h hashes (often thousands)
         resp = self.session.get(
             API_URL,
             params={"api_key": self.api_key, "action": "getlist"},
@@ -28,17 +27,24 @@ class MalShareSource(Source):
         )
         resp.raise_for_status()
         items = resp.json() or []
+        skipped = sum(1 for i in items if (i.get("sha256") or "").lower() in self.skip_hashes)
+        log.info("MalShare got %d hashes (%d already known, %d new)", len(items), skipped, len(items) - skipped)
         yielded = 0
+        download_failed = 0
+        too_small = 0
         for item in items:
             if yielded >= limit:
                 return
             sha256 = (item.get("sha256") or "").lower()
             if not sha256:
                 continue
+            if sha256 in self.skip_hashes:
+                continue
             try:
                 content = self._download(sha256)
             except Exception as e:
                 log.warning("MalShare download %s failed: %s", sha256, e)
+                download_failed += 1
                 continue
             yield Sample(
                 sha256=sha256,
@@ -48,6 +54,8 @@ class MalShareSource(Source):
                 metadata={"md5": item.get("md5"), "sha1": item.get("sha1")},
             )
             yielded += 1
+        if download_failed or too_small:
+            log.info("MalShare: %d download failures, %d too small", download_failed, too_small)
 
     def _download(self, sha256: str) -> bytes:
         resp = self.session.get(
@@ -58,4 +66,6 @@ class MalShareSource(Source):
         resp.raise_for_status()
         if not resp.content or resp.content.startswith(b"Sample not found"):
             raise RuntimeError("sample not found")
+        if len(resp.content) < 64:
+            raise RuntimeError(f"sample too small ({len(resp.content)} bytes)")
         return resp.content

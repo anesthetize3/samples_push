@@ -84,6 +84,15 @@ class State:
             )
             return cur.fetchone() is not None
 
+    def known_hashes(self, target: str) -> set[str]:
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT sha256 FROM processed WHERE target = ? "
+                "AND status IN ('uploaded', 'report_ready', 'vaulted')",
+                (target,),
+            )
+            return {row[0] for row in cur.fetchall()}
+
     def mark(
         self,
         sha256: str,

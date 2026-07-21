@@ -4,10 +4,12 @@ import io
 import logging
 import re
 import time
+from pathlib import Path
 from typing import Iterator
 
 import pyzipper
 
+from ..config import _platform_data_root
 from ..models import Sample
 from .base import Source
 
@@ -20,7 +22,7 @@ DOWNLOAD_URL = "https://virusshare.com/apiv2/download"
 # Starting cursor when nothing in state yet. Latest as of 2026-06.
 DEFAULT_START_INDEX = 499
 # Rate-limit buffer between API hits (seconds).
-REQUEST_DELAY = 1.0
+REQUEST_DELAY = 3.0
 
 _MD5_RE = re.compile(r"^[a-fA-F0-9]{32}$")
 
@@ -44,9 +46,20 @@ class VirusShareSource(Source):
         self.api_key = config.env["VIRUSSHARE_API_KEY"].strip()
         idx_override = config.env.get("VIRUSSHARE_HASHLIST_INDEX", "").strip()
         self.index_override = int(idx_override) if idx_override.isdigit() else None
-        # Set by pipeline before iter_new via attribute injection? No — keep self-contained.
-        # We persist cursor via the pipeline's State, but Source has no state ref.
-        # Workaround: stash a callable on config later if needed. For now, env-only.
+        self._cursor_file = _platform_data_root() / "cursors" / "virusshare.txt"
+        self._cursor_file.parent.mkdir(parents=True, exist_ok=True)
+
+    def _get_cursor(self) -> tuple[int, int] | None:
+        """Returns (hashlist_index, position) or None."""
+        if self._cursor_file.exists():
+            text = self._cursor_file.read_text().strip()
+            if ":" in text:
+                parts = text.split(":")
+                return int(parts[0]), int(parts[1])
+        return None
+
+    def _set_cursor(self, idx: int, pos: int) -> None:
+        self._cursor_file.write_text(f"{idx}:{pos}")
 
     def iter_new(self, limit: int) -> Iterator[Sample]:
         idx = self._resolve_index()
@@ -57,27 +70,53 @@ class VirusShareSource(Source):
         if not hashes:
             log.warning("VirusShare: list %d empty", idx)
             return
-        log.info("VirusShare: using hashlist %d (%d hashes), taking last %d",
-                 idx, len(hashes), limit)
+
+        cursor = self._get_cursor()
+        start_pos = 0
+        if cursor and cursor[0] == idx:
+            start_pos = cursor[1]
+
+        remaining = hashes[start_pos:]
+        if not remaining:
+            log.info("VirusShare: hashlist %d fully processed (%d hashes)", idx, len(hashes))
+            return
+
+        log.info("VirusShare: hashlist %d (%d total, starting at position %d, %d remaining)",
+                 idx, len(hashes), start_pos, len(remaining))
+
         yielded = 0
-        for md5 in reversed(hashes):
-            if yielded >= limit:
-                return
-            try:
-                content, inner_name = self._download(md5)
-            except Exception as e:
-                log.warning("VirusShare download %s failed: %s", md5, e)
-                continue
-            sha256 = self.sha256_of(content)
-            yield Sample(
-                sha256=sha256,
-                source=self.name,
-                filename=inner_name or f"{sha256}.bin",
-                content=content,
-                metadata={"md5": md5, "hashlist_index": idx},
-            )
-            yielded += 1
-            time.sleep(REQUEST_DELAY)
+        last_pos = start_pos
+        try:
+            for i, md5 in enumerate(remaining):
+                if yielded >= limit:
+                    break
+                if self.should_stop():
+                    log.info("VirusShare: stop requested, breaking early")
+                    break
+                # Advance before yielding: if the caller abandons the generator
+                # early (shutdown, queue-full stop), the finally below still
+                # persists this position instead of re-walking it next run.
+                last_pos = start_pos + i + 1
+                try:
+                    content, inner_name = self._download(md5)
+                except Exception as e:
+                    log.warning("VirusShare download %s failed: %s", md5, e)
+                    continue
+                sha256 = self.sha256_of(content)
+                if sha256 in self.skip_hashes:
+                    log.debug("VirusShare: %s already sent (md5=%s), skipping", sha256[:12], md5)
+                    continue
+                yield Sample(
+                    sha256=sha256,
+                    source=self.name,
+                    filename=inner_name or f"{sha256}.bin",
+                    content=content,
+                    metadata={"md5": md5, "hashlist_index": idx},
+                )
+                yielded += 1
+                time.sleep(REQUEST_DELAY)
+        finally:
+            self._set_cursor(idx, last_pos)
 
     def _resolve_index(self) -> int | None:
         if self.index_override is not None:
@@ -120,8 +159,11 @@ class VirusShareSource(Source):
             )
             if resp.status_code == 204:
                 # Rate limited — back off then retry once.
-                log.info("VirusShare 204 rate-limited, sleeping 5s")
-                time.sleep(5.0)
+                log.info("VirusShare 204 rate-limited, sleeping 10s")
+                for _ in range(10):
+                    if self.should_stop():
+                        raise RuntimeError("stop requested")
+                    time.sleep(1.0)
                 continue
             if resp.status_code == 404:
                 raise RuntimeError("not found")

@@ -156,6 +156,8 @@ def run_pipeline(
                         "shutdown requested" if _shutdown_requested else "filescan queue full")
             continue
         log.info("[bold cyan]== %s ==[/bold cyan]", src.name)
+        src.skip_hashes = state.known_hashes(target)
+        src.should_stop = lambda: _shutdown_requested
         try:
             iterator = src.iter_new(limit)
         except Exception as e:
