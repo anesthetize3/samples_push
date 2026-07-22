@@ -62,6 +62,8 @@ class Config:
     filescan_auth_token: str
     filescan_staging_api_key: str
     filescan_base_url: str
+    state_repo_url: str
+    state_repo_branch: str
     env: dict[str, str]
 
     @classmethod
@@ -79,6 +81,8 @@ class Config:
             filescan_base_url=os.environ.get(
                 "FILESCAN_BASE_URL", "https://www.filescan.io"
             ).strip().rstrip("/"),
+            state_repo_url=os.environ.get("STATE_REPO_URL", "").strip(),
+            state_repo_branch=os.environ.get("STATE_REPO_BRANCH", "main").strip() or "main",
             env=dict(os.environ),
         )
 

@@ -1,4 +1,4 @@
-# samples_push
+# samples_push Test
 
 Collects malware samples from public threat-intel feeds and uploads each one
 to [filescan.io](https://www.filescan.io/) for analysis. Runs on Linux,
@@ -63,6 +63,7 @@ export FILESCAN_API_KEY="your_key"
 ✅ **Smart Replay** - Re-upload vault samples without re-fetching  
 ✅ **Encrypted Storage** - AES-256 vault, never decrypt to disk  
 ✅ **Auto-Dedup** - SQLite state tracking per target  
+✅ **Multi-Machine State Sync** - `STATE_REPO_URL` shares upload history via a private GitHub repo  
 ✅ **Bulk ZIP Import** - `--import-zip` for batch uploads  
 ✅ **Secrets Outside Repo** - `.env` stored in local data dir, not project folder  
 
@@ -478,6 +479,49 @@ Reset:
 ./run.sh --clear-target "https://staging.filescan.io"
 ./run.sh --clear-cursors
 ```
+
+### Multi-Machine State Sync
+
+If you run `samples_push` on more than one machine (e.g. a cron box and a laptop), each one otherwise fetches and uploads independently — the same sample can get pushed to filescan twice. Setting `STATE_REPO_URL` shares `state.db` across machines via a private GitHub repo, so any hash already uploaded by one machine is skipped by all the others.
+
+**Setup:**
+```bash
+gh repo create samples-push-state --private
+```
+Add to `.env` (local data dir, not the project folder):
+```
+STATE_REPO_URL=git@github.com:<you>/samples-push-state.git
+```
+
+**Git credentials (per machine):** this is plain `git` under the hood, not a special auth path — every machine that runs `samples_push` with `STATE_REPO_URL` set needs the same push access to that repo you'd need for `git push` by hand. Two ways to give it that:
+
+- **SSH (recommended for a fixed set of machines):**
+  ```bash
+  ssh-keygen -t ed25519 -C "samples-push-state" -f ~/.ssh/samples_push_state -N ""
+  cat ~/.ssh/samples_push_state.pub
+  ```
+  Add the public key as a **Deploy key** (repo → Settings → Deploy keys → Add, check "Allow write access") — scopes it to this one repo instead of your whole GitHub account. Then make sure that key is the one git offers for this host, e.g. via `~/.ssh/config`:
+  ```
+  Host github.com-samples-push-state
+    HostName github.com
+    IdentityFile ~/.ssh/samples_push_state
+  ```
+  and use `STATE_REPO_URL=git@github.com-samples-push-state:<you>/samples-push-state.git`.
+
+- **HTTPS + PAT (simpler for cron boxes / containers):** create a fine-grained PAT scoped to just this repo with Contents: Read and write, then:
+  ```
+  STATE_REPO_URL=https://<token>@github.com/<you>/samples-push-state.git
+  ```
+
+- **Git identity (needed either way):** pushing creates a commit, so each machine also needs `git config --global user.email` / `user.name` set — a fresh cron box or container often doesn't have this yet, and push will fail with "Please tell me who you are" until it's set once:
+  ```bash
+  git config --global user.email "samples-push@yourdomain"
+  git config --global user.name "samples-push"
+  ```
+
+**How it works:** at the start of every run, `state.db` is merged (not overwritten) with whatever the repo has — new upload records from other machines are pulled in, but nothing local is ever discarded, even if this machine's last push failed. After the run, any new uploads are pushed back; if another machine pushed in between, it retries against the latest remote automatically.
+
+This only runs around the normal fetch/upload flow — `--stats`, `--clear-cache`, `--import-zip`, and `--repair-vault` don't push (though they do pick up whatever was last pulled).
 
 ---
 
